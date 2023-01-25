@@ -1,0 +1,351 @@
+#!/usr/bin/env python3
+
+# lutcraft (lutc)
+# Tool to create 3D lookup tables (.cube files) for video/image color manipulation
+
+
+# SPDX-License-Identifier: BSD-3-Clause
+# See license.txt for full license text
+# or visit https://spdx.org/licenses/BSD-3-Clause.html
+#
+#
+# Copyright (c) 2023 Christoph Kobe <kontakt@einexperte.de>
+#
+# Redistribution and use in source and binary forms,
+# with or without modification, are permitted
+# provided that the following conditions are met:
+#
+#    1. Redistributions of source code must retain the above copyright notice,
+#       this list of conditions and the following disclaimer.
+#    2. Redistributions in binary form must reproduce the above copyright
+#       notice, this list of conditions and the following disclaimer in the
+#       documentation and/or other materials provided with the distribution.
+#    3. Neither the name of the copyright holder nor the names of its
+#       contributors may be used to endorse or promote products derived from
+#       this software without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+# ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+# LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+# CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+# SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+# INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+# CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+# ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
+# THE POSSIBILITY OF SUCH DAMAGE.
+
+
+# Library imports
+import sys
+from PIL import Image
+import argparse
+
+VERSION = 0.9
+DEFAULT_SIZE = 32
+DEFAULT_LAYOUT = 'blocks'
+MAX_GUESSING_ERROR = 0.0001
+DEFAULT_PRECISION = 4
+
+
+# Block and image iterator
+class BlockIterator(object):
+	def __init__(self, imgwidth, imgheight, size, blocksperline):
+		self.imgw = imgwidth
+		self.imgh = imgheight
+		self.size = size
+		self.bpl = blocksperline
+		self.ptotal = self.size**3	# Total pixel count
+		self.i = 0
+		self.x = 0						# Pixel in block x position
+		self.y = 0						# Pixel in block y position
+		self.bx = 0						# Block x position
+		self.by = 0						# Block y position
+		assert self.imgw*self.imgh >= self.ptotal,\
+			f"image dimensions {self.imgw}x{self.imgh} too small "\
+			f"for total pixel count of {self.ptotal}"
+
+	def __iter__(self):
+		return self
+
+	def __next__(self):
+
+		if self.i >= self.ptotal:
+			raise StopIteration
+
+		# Calculate coordinates first
+		yabs = self.by * self.size + self.y
+		xabs = self.bx * self.size + self.x
+		
+		# Increment internal values
+
+		# iterate over a single block
+		self.i += 1	# Count total pixels here
+		self.x += 1
+
+		# X Position within block
+		if self.x >= self.size:
+			self.y += 1
+			self.x = 0
+			
+		# Y Position within block
+		if self.y >= self.size:	# Block finished
+			# Go to next block
+			self.bx += 1
+			self.y = 0
+			if self.bx >= self.bpl:	# Line of blocks finished
+				# Start at next line of blocks
+				self.by += 1
+				self.bx = 0
+
+		# return coordinates
+		return xabs, yabs
+	
+
+# Write a single line to lutfile
+def lineout(f, r, g, b, p):
+	formatline = "{{:.{}f}} {{:.{}f}} {{:.{}f}}\n".format(p,p,p)
+	f.write(formatline.format(r/255,g/255,b/255))
+
+
+# Write image pixel to file
+def pixelout(f, img, x, y, p):
+	r,g,b = img.getpixel((x,y))
+	lineout(f, r, g, b, p)
+
+
+# Guess size by dimensions
+# Should work for squares and default size=32
+def guess_size(args, img_width, img_height):
+
+	ptotal = img_width * img_height
+	raw_size = pow(ptotal, 1/3)
+	rounded_size = round(raw_size)
+	print(f"Guessed gsize: {raw_size}")
+
+	# Only set args.size if error is small
+	error = abs(rounded_size - raw_size)
+	if error < MAX_GUESSING_ERROR:
+		args.size = rounded_size
+		print(f"Small error, found size: {args.size}")
+
+	return args
+
+
+# Set defaults for missing arguments
+def set_missing_args(args):
+	print("Not yet implemented")
+	return args
+
+
+# Craft a lut (.cube file) from sample image
+def lutcraft(args):
+	if args.verbose:
+		print("function: lutcraft")
+		print("reading image file: {}".format(args.infile))
+	img = Image.open(args.infile)
+	if args.verbose:
+		print("image format: ", end="")
+		print(img.format, img.size, img.mode)
+
+	img_width, img_height = img.size
+
+	# Try to guess missing lut size
+	if not args.size:
+		args = guess_size(args, img_width, img_height)
+		if not args.size: # guessing failed
+			print("Missing size. Guessing failed. Exiting ...")
+			exit(1)
+#		args.size = DEFAULT_SIZE
+
+	if not args.width and not args.height:
+		print("Missing width and height, using image dimensions")
+		args.width = img_width
+		args.height = img_height
+
+	if not args.blocks_per_line:
+		print(f"Missing blocks_per_line, using args.width/args.size="\
+			f"{args.width/args.size}")
+		args.blocks_per_line = int(args.width/args.size)
+		print(f"Assuming blocks_per_line={args.blocks_per_line}")
+		
+	size = args.size
+
+	# Write header to output file
+	if args.verbose:
+		print("writing to output file: {}".format(args.outfile))
+	with open(args.outfile, "w") as f:
+		# Write headers
+		f.write("TITLE \"{}\"\n".format(args.title))
+		f.write("LUT_3D_SIZE {}\n".format(size))
+		f.write("DOMAIN_MIN 0 0 0\n")
+		f.write("DOMAIN_MAX 1.0 1.0 1.0\n")
+		f.write("\n")
+
+		# Read image with native layout
+		if args.layout == 'native':
+			if args.verbose:
+				print("using layout algorith: native")
+			x = 0
+			y = 0
+			for blue in range(size):
+				for green in range(size):
+					for red in range(size):
+						pixelout(f, img, x, y)
+						x += 1
+						if x >= img_width:
+							x = 0
+							y += 1
+
+		# Read image with blocks layout
+		elif args.layout == 'blocks':
+			if args.verbose:
+				print("using layout algorithm: blocks")
+
+			# Set up iterator and write to file
+			blockiter = BlockIterator(args.width, args.height, args.size, args.blocks_per_line)
+			for x,y in blockiter:
+				pixelout(f, img, x, y, args.precision)
+				
+
+# Create neutral lut image
+def neutral(args):
+	if args.verbose >= 2:
+		print("function: neutral")
+
+	# Check for specified size
+	if not args.size:
+		if args.verbose:
+			print(f"using default size: {DEFAULT_SIZE}")
+		args.size = DEFAULT_SIZE
+	else:
+		if args.verbose:
+			print(f"lut size: {size}")
+
+	size = args.size # less to type
+	if args.verbose:
+		ptotal = size ** 3
+		print("total lut points: {}".format(ptotal))
+
+	# Set image dimension automatically for square numbers
+	if not args.width and not args.height:
+		for n in range(1,16+1):
+			if size == n ** 2:
+				if args.verbose:
+					print(f"size is a square number: {size}")
+				args.width = n ** 3
+				args.height = args.width
+				args.blocks_per_line = n
+				if args.verbose:
+					print(f"automatically setting width: {args.width}, "\
+						f"height: {args.height} and "\
+						f"blocks_per_line: {args.blocks_per_line}")
+
+	# Dimensions still not set?			
+	if not args.width and not args.height:
+		if not args.blocks_per_line:
+			# guess bpl
+		# special case: size == 32
+			if args.size % 8 == 0:
+				args.blocks_per_line = 8
+			elif args.size % 4 == 0:
+				args.blocks_per_line = 4
+			else:
+				print("No suitable value for blocks_per_line found. Exiting ...")
+				exit(1)
+
+		# Check again if we have bpl now
+		if args.blocks_per_line:
+			bpl = args.blocks_per_line
+			ptotal = args.size ** 3
+			args.width = args.size * bpl
+			args.height = int(ptotal / (bpl * args.size) )
+			print(f"bpl: {bpl}, width: {args.width}, height: {args.height}")
+		else:
+			print("Image dimensions not specified (failed to guess). Exiting ...")
+			exit(1)
+
+	# Create a new image with the desired dimensions
+	img = Image.new('RGB', (args.width, args.height))
+
+	if args.layout == 'blocks':
+		if args.verbose:
+			print("using layout algorithm: blocks")
+		blockiter = BlockIterator(args.width, args.height, size, args.blocks_per_line)
+
+	# Iterate over all pixels
+	x = 0
+	y = 0
+	for blue in range(size):
+		b = int(255 * blue / (size-1))
+		for green in range(size):
+			g = int(255 * green / (size-1))
+			for red in range (size):
+				r = int(255 * red / (size-1))
+
+				# For block layout, get x and y from iterator
+				if args.layout == 'blocks':
+					x, y = next(blockiter)
+			
+				# Set the pixel color
+				img.putpixel((x, y), (r, g, b))
+			
+				# Adjust pixel position for native layout
+				if args.layout == 'native':
+					x += 1
+					if x >= args.width:
+						x = 0
+						y += 1
+
+	# Save the image to a file
+	if args.verbose:
+		print(f"writing image file: {args.outfile}")
+	img.save(args.outfile)
+
+# Parse arguments
+def parse():
+	parser = argparse.ArgumentParser()
+	parser.add_argument("outfile", help="Name of file to write to", nargs="?")
+#		 default=f"lut{DEFAULT_SIZE}-x.png")
+	parser.add_argument("-s", "--size", type=int,
+		help=f"size of lut, points per dimension (default: {DEFAULT_SIZE})")
+	parser.add_argument("--width", help="width of image to create or read",
+		type=int)
+	parser.add_argument("--height", help="height of image to create or read",
+		type=int)
+	parser.add_argument("-bpl", "--blocks_per_line", type=int,
+		help="blocks per horizontal line (only valid for blocks layout)")
+	parser.add_argument("-i", "--infile", help="input file name")
+	parser.add_argument("-l", "--layout", 
+		help=f"image pixel layout (default: {DEFAULT_LAYOUT})",
+		choices=['native','blocks'], default=DEFAULT_LAYOUT)
+	parser.add_argument("-t", "--title", help="title for the lut file")
+	parser.add_argument("-p", "--precision", type=int, default=DEFAULT_PRECISION,
+		help=f"number of digits after comma (default: {DEFAULT_PRECISION}")
+	parser.add_argument("-v", "--verbose", default=0, action="count",
+		help="print verbose information")
+	parser.add_argument("-V", "--version", help="print version number",
+		action="store_true")
+	args = parser.parse_args()
+
+	return args
+
+
+# Program entry point
+if __name__ == '__main__':
+	# Parse command line
+	args = parse()
+
+	# Print version
+	if args.version or args.verbose:
+		print(f"lutcraft version {VERSION}")
+		if args.version: # Only display version number
+			exit(0)
+
+	# Craft lut or create neutral png
+	if args.infile:
+		lutcraft(args)
+	else:
+		neutral(args)
+
